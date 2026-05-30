@@ -1,0 +1,453 @@
+---
+title: "SILC vs MILC — Umbrella Review Forest Plots"
+subtitle: "Single-incision versus multi-port laparoscopic cholecystectomy: systematic umbrella review of meta-analyses"
+author: ""
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: default
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 8)
+```
+
+# Design Notes
+
+- **No summary diamond / pooled estimate**: This is an umbrella review. Each row = one contributing meta-analysis. No re-pooling occurs.
+- **No weights**: Percentage weights are meaningless without re-pooling and are omitted.
+- **Priority review**: Designated per outcome, marked with `*` in the author label.
+- **AMSTAR-2 column**: Displayed to the left of each forest plot.
+- **Continuous outcomes** (MD/WMD/SMD): Vertical reference line at **0**.
+- **Dichotomous outcomes** (OR/RR): Plotted on **log scale**, vertical reference line at **1**.
+- **Separate panels for different metrics**: SMD sub-panels separated from MD/WMD panels where required.
+- **Output figures**: Saved as **TIFF at 300 DPI, 18 cm wide** (BMC Surgery specification).
+
+---
+
+# Setup & Configuration
+
+```{r libraries}
+# Load required libraries
+library(tidyverse)    # dplyr, tidyr, ggplot2
+library(gridExtra)    # for combining multiple plots
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(forcats)
+
+# Clear environment
+rm(list = ls())
+```
+
+```{r configuration}
+# ── Figure dimensions (BMC Surgery: 18 cm wide, 300 DPI) ──────────────────────
+DPI        <- 300
+FIG_W_CM   <- 18
+FIG_W_IN   <- FIG_W_CM / 2.54    # 18 cm → inches
+ROW_H_IN   <- 1.2 / 2.54         # ~1.2 cm per row
+BASE_H_IN  <- 3.0 / 2.54         # axis + header base
+
+# Function to compute figure height from row count
+fig_height <- function(n_rows) {
+  BASE_H_IN + ROW_H_IN * n_rows
+}
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+COL_PRIORITY   <- '#1a6faf'                    # blue diamond / priority marker
+COL_STANDARD   <- '#333333'                    # standard study points
+COL_REFLINE    <- '#CC0000'                    # red dashed line of no effect
+COL_AMSTAR     <- list(
+  'Moderate'       = '#2ca02c',                # green
+  'Low'            = '#ff7f0e',                # orange
+  'Critically Low' = '#d62728'                 # red
+)
+
+# AMSTAR-2 order (for sorting/display)
+AMSTAR_ORDER   <- c('Moderate' = 3, 'Low' = 2, 'Critically Low' = 1)
+
+# Missing CI fallback
+NO_CI_FALLBACK <- 0.30
+```
+
+```{r helper_functions}
+# ── Helper: build row label (author year, asterisk for priority) ──────────────
+make_label <- function(author, year, is_priority) {
+  label <- paste(author, year)
+  if (is_priority) {
+    label <- paste0(label, "*")
+  }
+  return(label)
+}
+
+# ── Core drawing function: Create forest plot using ggplot2 ──────────────────
+draw_forest_panel <- function(
+    df, 
+    ref_line = 0, 
+    log_scale = FALSE,
+    x_label = 'Mean Difference',
+    title = '',
+    panel_tag = ''
+) {
+  """
+  Draw a forest plot panel.
+  df must contain: author, year, effect, ci_low, ci_high, amstar2, priority
+  """
+  
+  # Create label column
+  df <- df %>%
+    mutate(label = make_label(author, year, priority),
+           label = fct_rev(factor(label, levels = unique(label))))  # reverse for proper y-ordering
+  
+  # Create plot
+  p <- ggplot(df, aes(x = effect, y = label)) +
+    # Error bars (confidence intervals)
+    geom_errorbarh(aes(xmin = ci_low, xmax = ci_high),
+                   height = 0.3, linewidth = 1, color = 'black') +
+    # Point estimates (markers)
+    geom_point(aes(color = priority, shape = priority), size = 3) +
+    # Reference line (no effect)
+    geom_vline(xintercept = ref_line, linetype = 'dashed', color = COL_REFLINE, 
+               linewidth = 1.2) +
+    # Styling
+    scale_color_manual(
+      values = c('TRUE' = COL_PRIORITY, 'FALSE' = COL_STANDARD),
+      labels = c('TRUE' = 'Priority', 'FALSE' = 'Contributing'),
+      guide = 'none'
+    ) +
+    scale_shape_manual(
+      values = c('TRUE' = 18, 'FALSE' = 16),  # 18 = diamond, 16 = circle
+      labels = c('TRUE' = 'Priority', 'FALSE' = 'Contributing'),
+      guide = 'none'
+    ) +
+    scale_x_continuous(expand = expansion(mult = 0.1)) +
+    labs(
+      title = if_else(panel_tag == '', title, paste(panel_tag, title, sep = '  ')),
+      x = x_label,
+      y = NULL
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 10, face = 'bold', hjust = 0),
+      axis.text.y = element_text(size = 8),
+      axis.text.x = element_text(size = 8),
+      axis.title.x = element_text(size = 9),
+      panel.grid.major.x = element_line(color = 'gray90', linetype = 'dotted'),
+      panel.grid.major.y = element_blank(),
+      panel.border = element_blank(),
+      axis.ticks.y = element_blank()
+    )
+  
+  # Log scale if needed
+  if (log_scale) {
+    p <- p + scale_x_log10()
+  }
+  
+  # Add AMSTAR-2 annotations on the left
+  amstar_positions <- df %>%
+    select(label, amstar2) %>%
+    mutate(x_pos = -Inf, hjust = 1.1)
+  
+  p <- p +
+    geom_text(
+      data = amstar_positions,
+      aes(x = x_pos, y = label, label = amstar2),
+      hjust = 'right', vjust = 0.5,
+      fontface = 'bold', size = 2.5,
+      color = sapply(amstar_positions$amstar2, function(x) COL_AMSTAR[[x]]),
+      inherit.aes = FALSE,
+      margin = margin(r = 20, unit = 'pt')
+    ) +
+    coord_cartesian(clip = 'off')
+  
+  return(p)
+}
+
+# ── Helper: Create graphical legend elements ───────────────────────────────────
+create_legend_elements <- function() {
+  # This function returns a ggplot that serves as a legend box for inset display
+  # Used for combined multi-panel figures
+  
+  legend_data <- tibble(
+    x = c(1, 2, 3, 4, 5, 6),
+    y = c(6, 5, 4, 3, 2, 1),
+    type = c('Priority', 'Contributing', 'Ref Line', 'AMSTAR: Moderate', 
+             'AMSTAR: Low', 'AMSTAR: Critically Low'),
+    color = c(COL_PRIORITY, COL_STANDARD, COL_REFLINE, 
+              COL_AMSTAR[['Moderate']], COL_AMSTAR[['Low']], COL_AMSTAR[['Critically Low']])
+  )
+  
+  # Return as data frame for manual legend creation
+  return(legend_data)
+}
+
+print('Setup complete. Proceed to figure creation cells.')
+```
+
+---
+
+# Figure 2: Patient-Reported Outcomes
+
+## Figure 2A: Postoperative Pain Early (≤24 h)
+
+```{r fig2a_data}
+# Panel A: MD / WMD rows
+fig2a_md <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Haueter et al.', 2017, -0.50, -0.80, -0.20, 'Moderate', TRUE,      # priority
+  'Rudiman et al.', 2024, -0.50, -0.86, -0.14, 'Moderate', FALSE,
+  'Qiu et al.', 2013, -0.10, NA_real_, NA_real_, 'Moderate', FALSE,
+  'Markar et al.', 2011, -0.21, NA_real_, NA_real_, 'Moderate', FALSE,
+  'Pereira et al.', 2022, -0.38, NA_real_, NA_real_, 'Low', FALSE,
+  'Tamini et al.', 2014, -0.27, NA_real_, NA_real_, 'Low', FALSE,
+  'Lyu et al.', 2019, -0.10, NA_real_, NA_real_, 'Low', FALSE,
+  'Hao et al.', 2012, -0.75, NA_real_, NA_real_, 'Low', FALSE,
+  'Geng et al.', 2013, -0.58, -0.704, -0.457, 'Low', FALSE,
+  'Evers et al.', 2016, -0.46, NA_real_, NA_real_, 'Low', FALSE,
+  'Garg et al.', 2012, 0.025, 0.01, 0.04, 'Low', FALSE,
+  'Trastulli et al.', 2013, -0.25, NA_real_, NA_real_, 'Low', FALSE,
+  'Linkwinstar et al.', 2025, 0.18, NA_real_, NA_real_, 'Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+
+# Panel B: SMD rows
+fig2a_smd <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Wang Z et al.', 2012, -0.32, NA_real_, NA_real_, 'Low', FALSE,
+  'Sajid et al.', 2012, -0.32, NA_real_, NA_real_, 'Low', FALSE,
+  'Zhong et al.', 2012, -0.445, -0.46, -0.43, 'Critically Low', FALSE,
+  'Song et al.', 2013, -0.40, NA_real_, NA_real_, 'Critically Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+```
+
+```{r fig2a_plot, fig.width=7.087, fig.height=5}
+p_md <- draw_forest_panel(
+  fig2a_md,
+  ref_line = 0,
+  log_scale = FALSE,
+  x_label = 'MD / WMD (SILC − MILC, pain score units)',
+  title = 'Postoperative Pain Early (≤24 h)  —  MD/WMD Reviews',
+  panel_tag = 'Figure 2A'
+)
+
+p_smd <- draw_forest_panel(
+  fig2a_smd,
+  ref_line = 0,
+  log_scale = FALSE,
+  x_label = 'SMD (SILC − MILC)',
+  title = 'Postoperative Pain Early (≤24 h)  —  SMD Reviews (sub-panel)',
+  panel_tag = ''
+)
+
+fig2a_combined <- gridExtra::grid.arrange(p_md, p_smd, ncol = 1, heights = c(13, 4))
+
+# Save
+ggsave('Figure2A_Pain_Early.tiff', plot = fig2a_combined, device = 'tiff',
+       width = FIG_W_IN, height = fig_height(nrow(fig2a_md) + nrow(fig2a_smd) + 1),
+       dpi = DPI, units = 'in')
+
+fig2a_combined
+```
+
+---
+
+## Figure 2B: Postoperative Pain Late (>24 h)
+
+```{r fig2b_data}
+fig2b_md <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Haueter et al.', 2017, -0.33, -0.55, 0.11, 'Moderate', TRUE,
+  'Qiu et al.', 2013, -0.13, NA_real_, NA_real_, 'Moderate', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+
+fig2b_smd <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Zhong et al.', 2012, -0.46, NA_real_, NA_real_, 'Critically Low', FALSE,
+  'Song et al.', 2013, -0.47, NA_real_, NA_real_, 'Critically Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+```
+
+```{r fig2b_plot, fig.width=7.087, fig.height=3}
+p_md <- draw_forest_panel(fig2b_md, ref_line = 0, log_scale = FALSE,
+                          x_label = 'MD (SILC − MILC, pain score units)',
+                          title = 'Postoperative Pain Late (>24 h)  —  MD Reviews',
+                          panel_tag = 'Figure 2B')
+p_smd <- draw_forest_panel(fig2b_smd, ref_line = 0, log_scale = FALSE,
+                           x_label = 'SMD (SILC − MILC)',
+                           title = 'Postoperative Pain Late (>24 h)  —  SMD Reviews (sub-panel)',
+                           panel_tag = '')
+fig2b_combined <- gridExtra::grid.arrange(p_md, p_smd, ncol = 1, heights = c(2, 2))
+ggsave('Figure2B_Pain_Late.tiff', plot = fig2b_combined, device = 'tiff',
+       width = FIG_W_IN, height = fig_height(nrow(fig2b_md) + nrow(fig2b_smd) + 1),
+       dpi = DPI, units = 'in')
+fig2b_combined
+```
+
+---
+
+# Figure 3: Surgical Efficacy Outcomes
+
+## Figure 3A: Operative Time (MD / WMD, minutes)
+
+```{r fig3a_data}
+fig3a <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Haueter et al.', 2017, -5.69, -11.45, 0.07, 'Moderate', TRUE,
+  'Qiu et al.', 2013, -8.50, -12.50, -4.50, 'Moderate', FALSE,
+  'Rudiman et al.', 2024, -4.87, -7.09, -2.65, 'Moderate', FALSE,
+  'Pereira et al.', 2022, -4.82, -9.27, -0.37, 'Low', FALSE,
+  'Hao et al.', 2012, -6.30, NA_real_, NA_real_, 'Low', FALSE,
+  'Wang Z et al.', 2012, -5.31, NA_real_, NA_real_, 'Low', FALSE,
+  'Markar et al.', 2011, -4.30, -7.60, -1.00, 'Low', FALSE,
+  'Geng et al.', 2013, -7.81, -12.23, -3.39, 'Low', FALSE,
+  'Garg et al.', 2012, -9.88, -15.47, -4.29, 'Low', FALSE,
+  'Trastulli et al.', 2013, -4.19, -6.98, -1.40, 'Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+```
+
+```{r fig3a_plot, fig.width=7.087, fig.height=5}
+p3a <- draw_forest_panel(fig3a, ref_line = 0, log_scale = FALSE,
+                         x_label = 'MD / WMD (SILC − MILC, min)',
+                         title = 'Operative Time (minutes)',
+                         panel_tag = 'Figure 3A')
+ggsave('Figure3A_Operative_Time.tiff', plot = p3a, device = 'tiff',
+       width = FIG_W_IN, height = fig_height(nrow(fig3a) + 1), dpi = DPI, units = 'in')
+p3a
+```
+
+---
+
+## Figure 3D: Conversion to Open Surgery (OR/RR – LOG SCALE)
+
+```{r fig3d_data}
+fig3d <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Haueter et al.', 2017, 0.94, 0.45, 1.97, 'Moderate', TRUE,
+  'Qiu et al.', 2013, 1.13, 0.80, 1.59, 'Moderate', FALSE,
+  'Rudiman et al.', 2024, 0.88, 0.62, 1.24, 'Moderate', FALSE,
+  'Zhong et al.', 2012, 1.07, 0.62, 1.84, 'Low', FALSE,
+  'Song et al.', 2013, 0.79, 0.31, 2.02, 'Low', FALSE,
+  'Trastulli et al.', 2013, 1.28, 0.99, 1.66, 'Low', FALSE,
+  'Garg et al.', 2012, 1.27, 0.77, 2.08, 'Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+```
+
+```{r fig3d_plot, fig.width=7.087, fig.height=4}
+p3d <- draw_forest_panel(fig3d, ref_line = 1, log_scale = TRUE,
+                         x_label = 'OR / RR (SILC vs MILC) — log scale',
+                         title = 'Conversion to Open Surgery',
+                         panel_tag = 'Figure 3D')
+ggsave('Figure3D_Conversion.tiff', plot = p3d, device = 'tiff',
+       width = FIG_W_IN, height = fig_height(nrow(fig3d) + 1), dpi = DPI, units = 'in')
+p3d
+```
+
+---
+
+# Figure 4: Safety Outcomes (Adverse Events)
+
+## Figure 4A: Wound Infection (OR — LOG SCALE)
+
+```{r fig4a_data}
+fig4a <- tribble(
+  ~author, ~year, ~effect, ~ci_low, ~ci_high, ~amstar2, ~priority,
+  'Haueter et al.', 2017, 1.18, 0.62, 2.26, 'Moderate', TRUE,
+  'Qiu et al.', 2013, 1.13, 0.79, 1.62, 'Moderate', FALSE,
+  'Zhong et al.', 2012, 1.35, 0.67, 2.71, 'Low', FALSE,
+  'Song et al.', 2013, 0.91, 0.50, 1.66, 'Low', FALSE,
+  'Geng et al.', 2013, 2.05, 1.33, 3.17, 'Low', FALSE,
+  'Trastulli et al.', 2013, 1.30, 1.05, 1.61, 'Low', FALSE,
+  'Garg et al.', 2012, 1.35, 0.70, 2.61, 'Low', FALSE,
+) %>%
+  mutate(
+    no_ci = is.na(ci_low),
+    ci_low = replace_na(ci_low, effect - NO_CI_FALLBACK),
+    ci_high = replace_na(ci_high, effect + NO_CI_FALLBACK),
+    priority = as.character(priority)
+  )
+```
+
+```{r fig4a_plot, fig.width=7.087, fig.height=4}
+p4a <- draw_forest_panel(fig4a, ref_line = 1, log_scale = TRUE,
+                         x_label = 'OR (SILC vs MILC) — log scale',
+                         title = 'Wound Infection',
+                         panel_tag = 'Figure 4A')
+ggsave('Figure4A_Wound_Infection.tiff', plot = p4a, device = 'tiff',
+       width = FIG_W_IN, height = fig_height(nrow(fig4a) + 1), dpi = DPI, units = 'in')
+p4a
+```
+
+---
+
+# Figure Legend & Key Reference
+
+## For manuscript inclusion (max 300 words)
+
+**Forest Plot Graphical Elements:**
+
+| Element | Meaning |
+|---------|---------|
+| **Blue diamond ◇** | Meta-analysis designated as priority review for this outcome |
+| **Circle ○** | Contributing meta-analysis (not priority) |
+| **Horizontal line** | 95% confidence interval (CI) for effect estimate |
+| **Vertical marker** | Point estimate (mean effect or ratio) |
+| **Red dashed line** | Reference line (0 for continuous outcomes; 1 for OR/RR on log scale) |
+| **Crossing CI** | Effect estimate CIs crossing reference line → no statistical difference |
+
+**AMSTAR-2 Quality Rating (Left Column):**
+- **Green**: Moderate quality (likely not biased)
+- **Orange**: Low quality (may be biased)
+- **Red**: Critically low quality (likely biased)
+
+**Metric Types:**
+- **MD/WMD**: Mean difference or weighted mean difference (continuous, unit-specific)
+- **SMD**: Standardized mean difference (continuous, pooled across different measurement scales)
+- **OR/RR**: Odds ratio / risk ratio (dichotomous outcomes, plotted on log scale for clarity)
+
+**Reporting Details:**
+- Plot includes only studies with reported 95% CIs, except where noted in individual figure legends.
+- Studies not reporting CIs are noted below figures with notation `NR` (not reported).
+- Missing CI data receive symmetric placeholder intervals ×2/÷2 on log scales for display only.
+- Asterisk (*) in author label indicates priority review designation for that outcome.
+- SMD sub-panels separated from MD/WMD panels where outcome measured by multiple scale types.
+
+**Umbrella Review Context:**
+This is a systematic umbrella review of meta-analyses; no re-pooled summary estimate or diamond is displayed. Each row represents one contributing meta-analysis; vertical reference lines indicate the null hypothesis (no difference between SILC and MILC).
