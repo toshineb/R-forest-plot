@@ -24,10 +24,3 @@ Systematic umbrella review forest plots comparing Single-Incision Laparoscopic C
 - **Figure 3**: Surgical Efficacy Outcomes (5 panels)
 - **Figure 4**: Surgical Safety Outcomes (6 panels)
 
-## Getting Started
-
-### Python (Jupyter)
-
-```bash
-jupyter notebook notebooks/SILC_vs_MILC_Forest_Plots.ipynb
-```
